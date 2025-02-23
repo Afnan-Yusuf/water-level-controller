@@ -31,7 +31,8 @@ int VOLTAGE_CUTOFF_RETRY_TIME = 600; // seconds
 int STARTER_SWITCH_DURATION = 5; // seconds
 float VOLTAGE_CALIBRATION = 2.1;
 int SAFETY_TIMEOUT = 30; // minutes
-int WATER_FULL_DETECTED_BUFFER = 10000; // milliseconds
+int WATER_FULL_DETECTED_BUFFER = 5000; // milliseconds
+int WATER_LOW_DETECTED_BUFFER = 5000; // milliseconds
 int VOLTAGE_ABNORMALITY_BUFFER = 10000; // milliseconds
 int DRYRUN_DETECTION_BUFFER = 120000; // milliseconds // 2 minutes
 
@@ -47,7 +48,7 @@ bool voltage_cutoff_status = false;
 bool starter_status = false;
 float live_voltage = 0;
 float live_voltage_raw = 0;
-bool water_low = false;  // global status of water level in low pin
+bool water_low = true;  // global status of water level in low pin
 bool water_full = false;
 bool motor_dry_run = false;
 bool water_full_detected = false;
@@ -56,6 +57,8 @@ bool voltage_abnormality_detected = false;
 unsigned long voltage_abnormality_detected_millis;
 bool motor_dry_run_detected = false;
 unsigned long motor_dry_run_detected_millis;
+bool water_low_detected = false;
+unsigned long water_low_detected_millis;
 
 
 bool setup_mode = false;
@@ -145,7 +148,7 @@ String generateHTML() {
   html += "</body></html>";
   return html;
 }
-void update_pin_statuses_and_voltage(float update_delay_pin = 0.2,float update_delay_voltage = 0.05) {
+void update_pin_statuses_and_voltage(float update_delay_pin = 0.4,float update_delay_voltage = 0.05) {
   static unsigned long last_update_millis_pins = 0;
   static unsigned long last_update_millis_voltage = 0;
   static bool water_low_buffer[5] = {false};
@@ -161,6 +164,7 @@ void update_pin_statuses_and_voltage(float update_delay_pin = 0.2,float update_d
     water_low_buffer[buffer_index_pins] = !digitalRead(WATERLEVEL_LOW_PIN);
     water_full_buffer[buffer_index_pins] = !digitalRead(WATERLEVEL_FULL_PIN);
     motor_dry_run_buffer[buffer_index_pins] = !digitalRead(WATERLEVEL_DRYRUN_PIN);
+    
 
     // Increment buffer index
     buffer_index_pins = (buffer_index_pins + 1) % 5;
@@ -176,9 +180,9 @@ void update_pin_statuses_and_voltage(float update_delay_pin = 0.2,float update_d
       if (motor_dry_run_buffer[i]) motor_dry_run_count++;
     }
 
-    water_low = (water_low_count >= 3);
-    water_full = (water_full_count >= 3);
-    motor_dry_run = (motor_dry_run_count >= 3);
+    water_low = (water_low_count >= 1);
+    water_full = (water_full_count >= 1);
+    motor_dry_run = (motor_dry_run_count >= 1);
   }
   if (millis() - last_update_millis_voltage >= update_delay_voltage * 1000) {
     last_update_millis_voltage = millis();
@@ -346,6 +350,7 @@ void start_motor() {
   }
   if (live_voltage >= MOTOR_START_MIN_VOLTAGE_CUTOFF && live_voltage <= MOTOR_START_MAX_VOLTAGE_CUTOFF) {
     motor_running = true;
+    motor_running_status = 1;
     motor_starting_millis = millis();
     digitalWrite(RELAY_MOTOR_PIN, HIGH);
     digitalWrite(LED_MOTOR_ON_PIN, HIGH);
@@ -361,6 +366,7 @@ void start_motor() {
     digitalWrite(LED_LOW_HIGH_CUTOFF_PIN, HIGH);
     Serial.println("Voltage out of range, motor not started");
   }
+  
 }
 
 void stop_motor() {
@@ -384,24 +390,35 @@ void loop() {
   else { // Normal operation
     server.handleClient();
 
-    Serial.print("Water Low: ");
-    Serial.println(water_low);
-    Serial.print("Water Full: ");
-    Serial.println(water_full);
-    Serial.print("Motor Dry Run: ");
-    Serial.println(motor_dry_run);
-    Serial.print("Voltage: ");
-    Serial.println(live_voltage);
+    Serial.print("Water Low:\t");
+    Serial.print(water_low);
+    Serial.print("\tWater Full:\t");
+    Serial.print(water_full);
+    Serial.print("\tMotor Dry Run:\t");
+    Serial.print(motor_dry_run);
+    Serial.print("\tVoltage:\t");
+    Serial.print(live_voltage);
+    Serial.print("\tMotor Running:\t");
+    Serial.print(motor_running);
+    Serial.print("\tMotor Running Status:\t");
+    Serial.println(motor_running_status);
 
     if (!motor_running) {
       if (dryrun_cutoff_status){
         digitalWrite(LED_DRY_RUN_CUTOFF_PIN, millis()/500 % 2);
       }
-      if (!water_low && !water_full) {
-        start_motor();
+      if (!water_low) {
+        if (!water_low_detected) {
+          water_low_detected = true;
+          water_low_detected_millis = millis();
+        }
+        else if (millis() - water_low_detected_millis >= WATER_LOW_DETECTED_BUFFER) {
+          start_motor();
+          water_low_detected = false;
+        }
       } 
-      else if (!water_low && water_full) {
-        Serial.println("Error condition: Water low and full at the same time");
+      else {
+        water_low_detected = false;
       }
     } 
     else { // Motor is running
